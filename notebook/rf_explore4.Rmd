@@ -1,0 +1,291 @@
+---
+title: "Covariate Exploration for Random Forest Models"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(ggpubr)
+library(dendextend)
+library(caret)
+```
+
+```{r pal, include = FALSE}
+c25 <- c(
+  "dodgerblue2", "#E31A1C", 
+  "green4",
+  "#6A3D9A", 
+  "#FF7F00", 
+  "black", "gold1",
+  "skyblue2", "#FB9A99", 
+  "palegreen2",
+  "#CAB2D6", 
+  "#FDBF6F", 
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+```
+
+Supervised machine learning algorithms such as decision-tree based algorithms, are now a widely used method for predicting disease outcomes and risk mapping. They work by choosing data points randomly from a training set and building a decision tree to predict the expected value. Random Forests (RF) then combines several decision trees into one model, which has been shown to:  
+  . Increase predictive accuracy over single tree approaches - due to less bias and overfitting. 
+  . Deal well with interactions - by taking hierarchical dependencies into account. 
+  . Incorporating non-linear relationships - by using regression random forests. 
+However, random forests have been criticised as a "black box" model approach, and so covariate selection (and marginal effects/partial dependency plots) can help to inform how your covariates are behaving in the model. 
+
+The markdown is used for covariate exploration for random forest models, sections include: 
+  Section 1: Data Visualisation - Visualise the outbreak/covaraite data. 
+  Section 2: Data Distribution - Visualise how the data is distributed in time and space. 
+  Section 3: Correlations & Clustering - Evaluate how the covariates relate to each other and the outcome. 
+  Section 4: RF Best Fit - Fit the random forest models, with the formulas based on the clusters. 
+  Section 5: RF Performance - Test the performance of each of the models.  
+  Section 6: RF Variable Importance - Find the variable importance for each covaraite in the best fit model.
+
+The aim of the dataset used in this example was to inform OCV use in outbreaks settings: 
+  . Some outbreaks die out and others become wide-scale outbreaks which need intervention.
+  . We need a greater understanding of the risk factors for these larger scale outbreaks to improve OCV use. 
+  . The OCV stockpile is very limited and often doses can be wasted or administered too late. 
+  . Environmental variables may be one range of risk factors for which some outbreaks being larger than others.
+
+All the data are in the same file: The file consists of outbreaks and corresponding covaraite data. The outbreaks are for the African region, from 2010 to 2019 (the data in this example is cropped to 100 points vs 999 in the original). 
+
+The outcome metric of interest is outbreak attack rate. 
+
+More information on the caret package, used to fit the random forest models here, see the link:  <<https://topepo.github.io/caret/index.html>>
+
+The example here is available in a private GitHub repository, as the data are not publicly available, the link is here: <<https://github.com/GinaCharnley/random_forest_explore>> 
+
+## Section 1: Data Visualisation  ------------------------------------------------
+
+The first step is to load and visualise the data. Options in the DT package allow you to browse data in a markdown.  
+
+```{r import data, include=FALSE}
+# Load data 
+dat <- read_csv("data/data_cropped.csv")
+labs <- read_csv("data/covariate_metadata.csv")
+```
+
+```{r view data}
+# View the data 
+dat %>%
+  DT::datatable(extensions = c('Buttons', "FixedColumns"),
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                               lengthMenu = list(c(10,25,50,-1),
+                                                 c(10,25,50,"All")),
+                               scrollX = TRUE,
+                               scrollCollapse = TRUE),
+                caption = "Outbreak and Covariate Dataset")  %>%
+  DT::formatStyle(columns =1:ncol(dat), fontSize = '10pt')
+```
+
+## Section 2: Data Distribution  ------------------------------------------------
+
+The next step is to understand how the data is distributed. 
+
+Outbreaks are presented by country and start date of the outbreak. 
+
+Covariate data are presented by distribution. 
+
+```{r out expl}
+# Visualise the outbreaks 
+# Spatially 
+# Tally outbreaks by country and plot on a bar graph 
+outb_iso <- dat %>% group_by(country) %>% tally()
+ggplot(outb_iso, aes(x = reorder(country, n), y = n)) + geom_bar(stat = "identity") + 
+  coord_flip() + theme_minimal() + 
+  labs(x = "Country", y = "Number of Outbreaks") + 
+  theme(text = element_text(face = "bold"))
+
+# Temporally 
+# Create a histogram 
+ggplot(dat, aes(x = start_date)) + geom_histogram() + 
+  theme_minimal() + 
+  labs(x = "Start Date", y = "Number of Outbreaks") + 
+  theme(text = element_text(face = "bold"))
+```
+The output shows a barchart of the total number of outbreaks for the full period (2010-2020) by country and a histogram of the total number of outbreaks by date. Here, COD, ETH and NGA are heavily represented, with peaks in number of outbreaks in 2012 and 2018. 
+
+```{r cov dist, message=FALSE, warning=FALSE}
+# Visualise the covariates by distribution 
+# Add the labels to the covariates and split to a list 
+cov_data <- gather(dat, Column, Value, 10:24)
+cov_data <- left_join(cov_data, labs, by = "Column")
+cov_list <- cov_data %>% group_by(Column) %>% group_split()
+
+# Create a distribution plot for each covariate and merge them all to one plot 
+dist_p <- map(cov_list, ~ 
+                ggplot(.x, aes(x = Value)) + geom_histogram(alpha = .5) + theme_minimal() + 
+                labs(x = paste(.x$Label), y = "Count", title = paste(.x$Label, "Distribution")))
+ggarrange(plotlist = dist_p) 
+
+```
+The histograms show the distribution of each covariate for the data included in the model here. For case-only methods, it can be useful to plot the data for the fit and full dataset, to confirm whether the data you are fitting is representative of the full dataset. 
+
+## Section 3: Correlations and Clustering  ------------------------------------------------
+
+Next, we aim to understand how the covariates relate to each other. 
+
+This is done via Pearsons correlation coefficient (r) and hierarchical clustering. 
+
+Clusters can be used later for consideration in the best fit model to prevent multi-colinearity and overfitting. 
+
+Despite re-sampling helping to reduce the chances of re-fitting the same patterns and tuning being available for the number of trees and depth (the more the tree grows, the more likely it is to be overfit), the process here can be used to lend support that the final model is measuring independent processes. 
+
+```{r corrs, message=FALSE, warning=FALSE}
+# Compare correlations between covaraites and with attack rate 
+# Between covaraites 
+# Remove unwanted columns for the correlations e.g., location, date, outbreak ID etc 
+corr_data <- cor(dat[-c(1:10)], use="pairwise.complete.obs", method="pearson")
+# Create a correlation heatmap for all the covariates 
+corrplot::corrplot(corr_data, type = 'lower', tl.col = 'black',
+                     cl.ratio = 0.2, tl.srt = 45, col = corrplot::COL2('PRGn'))
+
+# With attack rate 
+# Calculate correlations between each covaraite and attack rate 
+corr_list <-Hmisc::rcorr(as.matrix(dat[10]),as.matrix(dat[11:24]), type="pearson")
+corr_list <- tibble(Column = colnames(dat[-c(1:9)]), r = corr_list$r[,1], p = corr_list$P[,1])
+corr_list <- left_join(corr_list, labs, by = "Column")
+corr_list %>% arrange(r)
+
+# Plot the correlation coefficents for each covaraite against attack rate 
+ggplot(corr_list[c(-1),], aes(x = reorder(Label, r), y = r, color = p, fill = p)) + 
+  geom_point() + coord_flip() + theme_minimal() + 
+  geom_hline(yintercept = 0) + labs(x = "Covariate", y = "Pearsons Correlation Coefficient") + 
+  theme(text = element_text(face = "bold"))
+
+```
+
+The heatmap shows how the covaraite data fitted to the model relate to each other, and the scatter plot shows how the covaraite data fitted to the model relate to the outcome (attack rate). Temperature and rainfall had the most negative corelations with attack rate and age and sanitation the most positive. 
+
+```{r clust}
+# Calculate the distances and cluster using the complete method 
+corr_dist <- dist(corr_data, method = 'euclidean')
+corr_hlust <- hclust(corr_dist)
+
+# Cut the trees and save the cuts 
+corr_cuts <- data.frame(cutree(corr_hlust, k = length(unique(corr_hlust$labels))/2))
+corr_cuts$param1 <- row.names(corr_cuts)
+names(corr_cuts)[1]<-paste("cuts")
+names(corr_cuts)[2]<-paste("Column")
+corr_cuts <- left_join(corr_cuts, labs, by = "Column")
+row.names(corr_cuts) <- NULL
+corr_cuts %>% arrange(cuts)
+
+# Plot the clusters on a dendrogram 
+dend <- as.dendrogram(corr_hlust) 
+par(mar=c(1,1,1,12))
+dend %>% 
+  set("labels_col", value = c25, k= 6) %>%
+  set("branches_k_color", value = c25, k = 6) %>%
+  plot(horiz=TRUE, axes=FALSE)
+abline(v = 350, lty = 2)
+
+```
+The dataframe highlights which cluster each of the covaraites fit into and the dendrogram helps to visualise this. 
+
+## Section 4: RF Best Fit  ------------------------------------------------ 
+
+The next step is to fit the random forest model using the caret package. 
+
+The best fit model is found by selecting one covariate from each cluster (based on the tree cuts above), in different formula combinations. 
+
+Testing and training are set to a 70/30% split. 
+
+Cross-validation was chosen over bootstrapping, as this allows the model performance to be assessed based on test metrics.
+
+Ten re-sampling interactions (based on model stability, the prediction does not change much when the training data is modified slightly) and five complete sets of k-folds to complete were used (as the dataset is not particularly large)
+
+```{r rf fit}
+# Create a training dataset to fit and a testing data to assess performance
+rf_data <- dat[-c(1:9)]
+rf_data <- na.omit(rf_data)
+split <- rsample::initial_split(rf_data, prop = .7)
+train <- rsample::training(split)
+test  <- rsample::testing(split)
+
+# Set the control to repeated k-fold cross-validation for the re-sampling method
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3)
+# Set the number of variables to randomly sample as candidates at each split (mtry)
+mtry <- sqrt(ncol(rf_data[-c(1)]))
+# Create my grid to search 
+tunegrid <- expand.grid(.mtry=mtry)
+
+# Create all formula combinations 
+combos <- do.call(expand.grid, split(corr_cuts$Column, corr_cuts$cuts))
+combos <- combos %>% 
+  tidyr::unite(col = "formula", c("1", "2", "3", "4", "5", "6"), 
+               sep = "+") 
+
+# Fit a model for each formula 
+rfs <- list()
+for (i in 1:nrow(combos)){
+    rf <- train(Formula::as.Formula(paste('attack_rate ~', combos[c(i),])), data=train, 
+                method='rf', metric='RMSE', tuneGrid=tunegrid, trControl=control)
+    key <- toString(i)
+    rfs[[key]] <- rf
+}
+
+```
+
+The output is a list of random forest models. 
+
+## Section 5: RF Performance  ------------------------------------------------
+
+Test the performance of the models using the actual vs predicted attack rates. This extracts Root-Mean Square Error (RMSE), R Squared, Mean Absolute Error (MAE). Lower error values are better for RMSE and MAE and higher for Rsquared (proportion of variance the model accounts for). 
+
+```{r rf perform}
+# Test the performance of each of the models 
+rf_output <- map(rfs, ~ predict(.x, test))
+rf_output <- map(rf_output, ~ postResample(.x, test$attack_rate))
+rf_output <- bind_rows(rf_output, .id = "formula_id")
+
+# Bind the results to the original formula 
+combos$formula_id <- row.names(combos)
+rf_output <- left_join(rf_output, combos, by = "formula_id")
+
+# Find the best model based on the metric of interest, here R2 is selected  
+best_rf <- rf_output %>% filter(Rsquared == max(Rsquared))
+print(best_rf$formula)
+```
+Printed are the covaraites that were included in the best fit model. 
+
+## Section 6: RF Variable Importance  ------------------------------------------------ 
+
+Now we have the best fit model, we can extract variable importance for each of the covaraites. 
+
+Regression random forest variable importance metrics include:  
+  - %IncMSE: The increase in mean square error (MSE) of the predictions(estimated with out-of-bag-CV) when the variable is left out. 
+  - IncNodeImpurity: The increase in node purity (IncNodePurity) expresses the change in the homogeneity of the of the groups created by the trees (using the Gini coefficient as a measure). 
+
+```{r rf varimp}
+# Extract variable importance, from model 26, the selected best fit model 
+rf_varimp <- data.frame(varImp(rfs[[26]])$importance)
+rf_varimp$Column <- rownames(rf_varimp)
+rf_varimp <- cbind(rf_varimp, rf$finalModel$importance)
+rownames(rf_varimp) <- NULL
+names(rf_varimp)[1]<-paste("%IncMSE")
+# Visualise the variable importance 
+rf_varimp <- gather(rf_varimp, Metric, Value, c(1,3))
+rf_varimp <- left_join(rf_varimp, labs, by = "Column")
+ggplot(rf_varimp, aes(x = reorder(Label, Value), y = Value)) + geom_point() + 
+  theme_minimal() + facet_wrap(~Metric, scales = "free_x") + coord_flip() + 
+  labs(x = "Covariate") + theme(text = element_text(face = "bold"))
+```
+Covariates which are the most informative for predicted attack rate here were rainfall and temperatures anomalies and access to sanitation. 
+
+
+
+
