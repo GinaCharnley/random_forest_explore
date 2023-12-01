@@ -226,7 +226,7 @@ tunegrid <- expand.grid(.mtry=mtry)
 # Create all formula combinations 
 combos <- do.call(expand.grid, split(corr_cuts$Column, corr_cuts$cuts))
 combos <- combos %>% 
-  tidyr::unite(col = "formula", c("1", "2", "3", "4", "5", "6"), 
+  tidyr::unite(col = "formula", c("1", "2", "3", "4", "5", "6", "7"), 
                sep = "+") 
 
 # Fit a model for each formula 
