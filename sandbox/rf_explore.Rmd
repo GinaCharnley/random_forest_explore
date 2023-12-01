@@ -1,0 +1,247 @@
+---
+title: "Covariate Exploration for Random Forest Models"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = getwd())
+getwd()
+```
+
+```{r packages}
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(ggpubr)
+library(dendextend)
+library(caret)
+```
+
+```{r pal}
+c25 <- c(
+  "dodgerblue2", "#E31A1C", 
+  "green4",
+  "#6A3D9A", 
+  "#FF7F00", 
+  "black", "gold1",
+  "skyblue2", "#FB9A99", 
+  "palegreen2",
+  "#CAB2D6", 
+  "#FDBF6F", 
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+```
+
+The markdown is used for covariate exploration for random forest models. 
+
+The aim of the work here was to inform OCV use in outbreaks settings: 
+  Some outbreaks die out and others become wide-scale outbreaks which need intervention 
+  We need a greater understanding of the risk factors for these larger scale outbreaks to improve OCV use 
+  OCV stockpile is very limited and often doses can be wasted or administered too late 
+  Environmental variables may be one risk factor for some outbreaks being larger than others
+
+All the data are in the same file: The file consists of outbreaks and corresponding covaraite data. 
+
+The outbreaks are for the African region and from 2010 to 2019. 
+
+The outcome metric of interest is outbreak attack rate 
+
+## Data Visualisation  ------------------------------------------------
+The first step is to visualise the data.  
+
+```{r import data, warning=FALSE}
+# Load data 
+dat <- read_csv("outbreaks_covariates_dataset.csv")
+labs <- read_csv("covariate_metadata.csv")
+
+# View the data 
+dat %>%
+  DT::datatable(extensions = c('Buttons', "FixedColumns"),
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                               lengthMenu = list(c(10,25,50,-1),
+                                                 c(10,25,50,"All")),
+                               scrollX = TRUE,
+                               scrollCollapse = TRUE),
+                caption = "Outbreak and Covariate Dataset")  %>%
+  DT::formatStyle(columns =1:ncol(dat), fontSize = '10pt')
+```
+
+## Data Distribution  ------------------------------------------------
+
+The next step is to understand how the data is distributed. 
+
+Outbreaks are presented by country and start date of the outbreak. 
+
+Covariate data are presented by distribution. 
+
+```{r out expl}
+# Visualise the outbreaks 
+# Spatially 
+# Tally outbreaks by country and plot on a bar graph 
+outb_iso <- dat %>% group_by(country) %>% tally()
+ggplot(outb_iso, aes(x = reorder(country, n), y = n)) + geom_bar(stat = "identity") + 
+  coord_flip() + theme_minimal() + 
+  labs(x = "Country", y = "Number of Outbreaks") + 
+  theme(text = element_text(face = "bold"))
+
+# Temporally 
+# Create a histogram 
+ggplot(dat, aes(x = start_date)) + geom_histogram() + 
+  theme_minimal() + 
+  labs(x = "Start Date", y = "Number of Outbreaks") + 
+  theme(text = element_text(face = "bold"))
+```
+
+```{r cov dist}
+# Visualise the covariates by distribution 
+# Add the labels to the covariates and split to a list 
+cov_data <- gather(dat, Column, Value, 13:35)
+cov_data <- left_join(cov_data, labs, by = "Column")
+cov_list <- cov_data %>% group_by(Column) %>% group_split()
+
+# Create a distribution plot for each covariate and merge them all to one plot 
+dist_p <- map(cov_list, ~ 
+                ggplot(.x, aes(x = Value)) + geom_histogram(alpha = .5) + theme_minimal() + 
+                labs(x = paste(.x$Label), y = "Count", title = paste(.x$Label, "Distribution")))
+ggarrange(plotlist = dist_p) 
+
+```
+
+## Correlations and Clustering  ------------------------------------------------
+
+Next, is to understand how the covariates relate to each other. 
+
+This is done via Pearsons correlation coefficient and hierarchical clustering 
+
+```{r corrs}
+# Compare correlations between covaraites and with attack rate 
+# Between covaraites 
+# Remove unwanted columns for the correlations e.g., location, date, outbreak ID etc 
+corr_data <- cor(dat[-c(1:12)], use="pairwise.complete.obs", method="pearson")
+# Create a correlation heatmap for all the covariates 
+corrplot::corrplot(corr_data, type = 'lower', tl.col = 'black',
+                     cl.ratio = 0.2, tl.srt = 45, col = corrplot::COL2('PRGn'))
+
+# With attack rate 
+# Calculate correlations between each covaraite and attack rate 
+corr_list <-Hmisc::rcorr(as.matrix(dat[12]),as.matrix(dat[13:35]), type="pearson")
+corr_list <- tibble(Column = colnames(dat[-c(1:11)]), r = corr_list$r[,1], p = corr_list$P[,1])
+corr_list <- left_join(corr_list, labs, by = "Column")
+corr_list %>% arrange(r)
+# Plot the correlation coefficents for each covaraite against attack rate 
+ggplot(corr_list[c(-1),], aes(x = reorder(Label, r), y = r, color = p, fill = p)) + 
+  geom_point() + coord_flip() + theme_minimal() + 
+  geom_hline(yintercept = 0) + labs(x = "Covariate", y = "Pearsons Correlation Coefficient") + 
+  theme(text = element_text(face = "bold"))
+
+```
+
+```{r clust}
+# Calculate the distances and cluster using the complete method 
+corr_dist <- dist(corr_data, method = 'euclidean')
+corr_hlust <- hclust(corr_dist)
+
+# Cut the trees and save the cuts 
+corr_cuts <- data.frame(cutree(corr_hlust, k = length(unique(corr_hlust$labels))/2))
+corr_cuts$param1 <- row.names(corr_cuts)
+names(corr_cuts)[1]<-paste("cuts")
+names(corr_cuts)[2]<-paste("Column")
+corr_cuts <- left_join(corr_cuts, labs, by = "Column")
+row.names(corr_cuts) <- NULL
+corr_cuts %>% arrange(cuts)
+
+# Plot the clusters on a dendrogram 
+dend <- as.dendrogram(corr_hlust) 
+par(mar=c(1,1,1,12))
+dend %>% 
+  set("labels_col", value = c25, k= 11) %>%
+  set("branches_k_color", value = c25, k = 11) %>%
+  plot(horiz=TRUE, axes=FALSE)
+abline(v = 350, lty = 2)
+
+```
+
+## ROC and AUC  ------------------------------------------------
+
+Test the performance of the predictors (covariates) against the outcome metric (attack rate). 
+
+To fit the ROC, the outcome metrics need to be transformed into a binary classifier. 
+
+```{r roc}
+# Create a binary classifier based on the mean attack rate 
+roc_data <- dat[-c(1:11)]
+mean(roc_data$attack_rate, na.rm = TRUE) # 7.250655
+roc_data <- roc_data %>% mutate(ar_binary = 
+                                  case_when(attack_rate > 7.250655 ~ 1,
+                                            attack_rate <= 7.250655 ~ 0))
+# Split the data by covariate
+roc_data$attack_rate <- NULL
+roc_data <- gather(roc_data, Column, Value, 1:23)
+roc_data <- left_join(roc_data, labs, by = "Column")
+roc_list <- roc_data %>% group_by(Label) %>% group_split() %>%
+   setNames(unique(roc_data$Label))
+# Create a roc object for each covaraite against the binary classifier 
+roc <- map(roc_list, ~ pROC::roc(.x$ar_binary, .x$Value))
+```
+
+```{r auc}
+# Extract the AUC from the ROC  
+auc <- roc %>% map(~ tibble(AUC = .x$auc))
+auc <- do.call(rbind, auc)
+auc$Covariate <- rownames(auc)
+rownames(auc) <- NULL
+
+# Plot the AUC values 
+ggplot(auc, aes(x = reorder(Covariate, AUC), y = AUC)) + 
+  geom_point() + 
+  theme_minimal() + coord_flip() + labs(x = "Covariate") + 
+  theme(text = element_text(face = "bold")) 
+```
+
+## RF Variable Importance 
+
+Use a grid search to extract the random forest variable importance for each covaraite against AR
+
+Regression random forest variable importance metrics include:  
+  - %IncMSE: The increase in mean square error (MSE) of the predictions(estimated with out-of-bag-CV) when the variable is left out 
+  - IncNodeImpurity: The increase in node purity (IncNodePurity) expresses the change in the homogeneity of the of the groups created by the trees (using the Gini coefficient as a measure)
+
+Cross-validation was chosen over bootstrapping, as this allows the model performance to be assessed based on test metrics. 
+
+Ten re-sampling interactions (based on model stability) and five complete sets of k-folds to complete were used (as the dataset is not particularly large). 
+
+```{r rf varimp}
+# Set the control to repeated k-fold cross-validation for the re-sampling method
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3)
+# Remove nas
+rf_data <- dat[-c(1:11)]
+rf_data <- na.omit(rf_data)
+# Set the number of variables to randomly sample as candidates at each split (mtry)
+mtry <- sqrt(ncol(rf_data[-c(1)]))
+# Create my grid to search 
+tunegrid <- expand.grid(.mtry=mtry)
+# Fit the model 
+rf <- train(attack_rate~., data=rf_data, method='rf', 
+            metric='RMSE', tuneGrid=tunegrid, trControl=control)
+# Extract variable importance 
+rf_varimp <- data.frame(varImp(rf)$importance)
+rf_varimp$Covariate <- rownames(rf_varimp)
+rf_varimp <- cbind(rf_varimp, rf$finalModel$importance)
+rownames(rf_varimp) <- NULL
+names(rf_varimp)[1]<-paste("%IncMSE")
+
+
+```
+
+
+
+

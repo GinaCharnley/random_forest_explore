@@ -1,0 +1,33 @@
+Column,Label
+ID_outbreak,OutbreakID
+country,Country
+region,Region
+rural_urban,Urbanicity
+pop_cat,Population Catagory
+den_cat,Density Category
+start_date,Start
+attack_rate,Attack Rate
+AR_log,Attack Rate (log.)
+mean_flood,Mean Flood
+max_flood,Max Flood
+fld_anomaly,Flood Anomaly
+fld_ext_mean,Mean Flood Extreme
+fld_ext_meax,Max Flood Extreme
+perc_1under,Under 1
+perc_2under,Under 2
+perc_5under,Under 5
+mean_age,Mean Age
+median_age,Median Age
+mean_pdsi,PDSI
+pdsi_anomaly,PDSI Anomaly
+pdsi_ext,PDSI Extreme
+mean_precip,Mean Rainfall
+pre_anomaly,Rainfall Anomaly
+pre_ext,Rainfall Extreme
+seasonality,Mean Seasonality
+in_season,In Season
+mean_tmp,Mean Temperature
+tmp_anomaly,Temperature Anomaly
+tmp_ext,Temperature Extreme
+perc_sanitation,Sanitation Acess
+perc_water,Water Access 

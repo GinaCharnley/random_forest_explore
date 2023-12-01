@@ -1,0 +1,305 @@
+---
+title: "Covariate Exploration for Random Forest Models"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(ggpubr)
+library(dendextend)
+library(caret)
+```
+
+```{r pal, include = FALSE}
+c25 <- c(
+  "dodgerblue2", "#E31A1C", 
+  "green4",
+  "#6A3D9A", 
+  "#FF7F00", 
+  "black", "gold1",
+  "skyblue2", "#FB9A99", 
+  "palegreen2",
+  "#CAB2D6", 
+  "#FDBF6F", 
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+```
+
+The markdown is used for covariate exploration for random forest models. It takes you throught several sections including: 
+  Section 1: Data Visualisation - Visualise the outbreak/covaraite data 
+  Section 2: Data Distribution - Visualise how the data is distributed in time and space 
+  Section 3: Correlations & Clustering - Evaluate how the covariates relate to each other and the outcome 
+  Section 4: RF Variable Importance - Compare the random forest variable importance measures 
+  Section 5: RF Best Fit - Test the performance of the best fit model 
+  Section 6: Additional RF Tuning - Explore different tuning options to improve model fit 
+
+The aim of the work here was to inform OCV use in outbreaks settings: 
+  . Some outbreaks die out and others become wide-scale outbreaks which need intervention 
+  . We need a greater understanding of the risk factors for these larger scale outbreaks to improve OCV use 
+  . OCV stockpile is very limited and often doses can be wasted or administered too late 
+  . Environmental variables may be one risk factor for some outbreaks being larger than others
+
+All the data are in the same file: The file consists of outbreaks and corresponding covaraite data. The outbreaks are for the African region, from 2010 to 2019 
+
+The outcome metric of interest is outbreak attack rate 
+
+More information on the caret package used to fit the models is available here:  <<https://topepo.github.io/caret/index.html>>
+
+The example here is available in a private GitHub repository, as the data are not publicly available, the link is here: <<https://github.com/GinaCharnley/random_forest_explore>> 
+
+## Section 1: Data Visualisation  ------------------------------------------------
+The first step is to visualise the data.  
+
+```{r import data, warning=FALSE}
+# Load data 
+dat <- read_csv("data/outbreaks_covariates_dataset.csv")
+labs <- read_csv("data/covariate_metadata.csv")
+
+# View the data 
+dat %>%
+  DT::datatable(extensions = c('Buttons', "FixedColumns"),
+                options = list(dom = 'Blfrtip',
+                               buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                               lengthMenu = list(c(10,25,50,-1),
+                                                 c(10,25,50,"All")),
+                               scrollX = TRUE,
+                               scrollCollapse = TRUE),
+                caption = "Outbreak and Covariate Dataset")  %>%
+  DT::formatStyle(columns =1:ncol(dat), fontSize = '10pt')
+```
+
+## Section 2: Data Distribution  ------------------------------------------------
+
+The next step is to understand how the data is distributed. 
+
+Outbreaks are presented by country and start date of the outbreak. 
+
+Covariate data are presented by distribution. 
+
+```{r out expl}
+# Visualise the outbreaks 
+# Spatially 
+# Tally outbreaks by country and plot on a bar graph 
+outb_iso <- dat %>% group_by(country) %>% tally()
+ggplot(outb_iso, aes(x = reorder(country, n), y = n)) + geom_bar(stat = "identity") + 
+  coord_flip() + theme_minimal() + 
+  labs(x = "Country", y = "Number of Outbreaks") + 
+  theme(text = element_text(face = "bold"))
+
+# Temporally 
+# Create a histogram 
+ggplot(dat, aes(x = start_date)) + geom_histogram() + 
+  theme_minimal() + 
+  labs(x = "Start Date", y = "Number of Outbreaks") + 
+  theme(text = element_text(face = "bold"))
+```
+
+```{r cov dist}
+# Visualise the covariates by distribution 
+# Add the labels to the covariates and split to a list 
+cov_data <- gather(dat, Column, Value, 13:35)
+cov_data <- left_join(cov_data, labs, by = "Column")
+cov_list <- cov_data %>% group_by(Column) %>% group_split()
+
+# Create a distribution plot for each covariate and merge them all to one plot 
+dist_p <- map(cov_list, ~ 
+                ggplot(.x, aes(x = Value)) + geom_histogram(alpha = .5) + theme_minimal() + 
+                labs(x = paste(.x$Label), y = "Count", title = paste(.x$Label, "Distribution")))
+ggarrange(plotlist = dist_p) 
+
+```
+
+## Section 3: Correlations and Clustering  ------------------------------------------------
+
+Next, is to understand how the covariates relate to each other 
+
+This is done via Pearsons correlation coefficient and hierarchical clustering 
+
+Clusters will be used later for consideration in the best fit model to prevent multi-colinearity and overfitting. 
+
+Despite re-sampling helping to reduce the chances of re-fitting the same patterns and tuning being available for the number of trees and depth (the more the tree grows, the more likely it is to be overfit), the process here lends support that the final model is measuring independent processes 
+
+```{r corrs}
+# Compare correlations between covaraites and with attack rate 
+# Between covaraites 
+# Remove unwanted columns for the correlations e.g., location, date, outbreak ID etc 
+corr_data <- cor(dat[-c(1:12)], use="pairwise.complete.obs", method="pearson")
+# Create a correlation heatmap for all the covariates 
+corrplot::corrplot(corr_data, type = 'lower', tl.col = 'black',
+                     cl.ratio = 0.2, tl.srt = 45, col = corrplot::COL2('PRGn'))
+
+# With attack rate 
+# Calculate correlations between each covaraite and attack rate 
+corr_list <-Hmisc::rcorr(as.matrix(dat[12]),as.matrix(dat[13:35]), type="pearson")
+corr_list <- tibble(Column = colnames(dat[-c(1:11)]), r = corr_list$r[,1], p = corr_list$P[,1])
+corr_list <- left_join(corr_list, labs, by = "Column")
+corr_list %>% arrange(r)
+# Plot the correlation coefficents for each covaraite against attack rate 
+ggplot(corr_list[c(-1),], aes(x = reorder(Label, r), y = r, color = p, fill = p)) + 
+  geom_point() + coord_flip() + theme_minimal() + 
+  geom_hline(yintercept = 0) + labs(x = "Covariate", y = "Pearsons Correlation Coefficient") + 
+  theme(text = element_text(face = "bold"))
+
+```
+
+```{r clust}
+# Calculate the distances and cluster using the complete method 
+corr_dist <- dist(corr_data, method = 'euclidean')
+corr_hlust <- hclust(corr_dist)
+
+# Cut the trees and save the cuts 
+corr_cuts <- data.frame(cutree(corr_hlust, k = length(unique(corr_hlust$labels))/2))
+corr_cuts$param1 <- row.names(corr_cuts)
+names(corr_cuts)[1]<-paste("cuts")
+names(corr_cuts)[2]<-paste("Column")
+corr_cuts <- left_join(corr_cuts, labs, by = "Column")
+row.names(corr_cuts) <- NULL
+corr_cuts %>% arrange(cuts)
+
+# Plot the clusters on a dendrogram 
+dend <- as.dendrogram(corr_hlust) 
+par(mar=c(1,1,1,12))
+dend %>% 
+  set("labels_col", value = c25, k= 11) %>%
+  set("branches_k_color", value = c25, k = 11) %>%
+  plot(horiz=TRUE, axes=FALSE)
+abline(v = 350, lty = 2)
+
+```
+## Section 4: RF Fit  ------------------------------------------------ 
+
+Fit the random forest model using the caret package 
+
+Testing and training are set to a 70/30% split
+
+Cross-validation was chosen over bootstrapping, as this allows the model performance to be assessed based on test metrics
+
+Ten re-sampling interactions (based on model stability, the prediction does not change much when the training data is modified slightly) and five complete sets of k-folds to complete were used (as the dataset is not particularly large)
+
+```{r rf fit}
+# Create a training dataset to fit and a testing data to assess performance
+split <- rsample::initial_split(rf_data, prop = .7)
+train <- rsample::training(split)
+test  <- rsample::testing(split)
+# Set the control to repeated k-fold cross-validation for the re-sampling method
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3)
+# Remove nas
+rf_data <- dat[-c(1:11)]
+rf_data <- na.omit(rf_data)
+# Set the number of variables to randomly sample as candidates at each split (mtry)
+mtry <- sqrt(ncol(rf_data[-c(1)]))
+# Create my grid to search 
+tunegrid <- expand.grid(.mtry=mtry)
+# Fit the model 
+rf <- train(attack_rate~., data=train, method='rf', 
+            metric='RMSE', tuneGrid=tunegrid, trControl=control)
+
+```
+
+## Section 5: RF Variable Importance  ------------------------------------------------ 
+
+Use a grid search to extract the random forest variable importance for each covaraite against AR
+
+Regression random forest variable importance metrics include:  
+  - %IncMSE: The increase in mean square error (MSE) of the predictions(estimated with out-of-bag-CV) when the variable is left out 
+  - IncNodeImpurity: The increase in node purity (IncNodePurity) expresses the change in the homogeneity of the of the groups created by the trees (using the Gini coefficient as a measure)
+
+```{r rf varimp}
+# Extract variable importance 
+rf_varimp <- data.frame(varImp(rf)$importance)
+rf_varimp$Column <- rownames(rf_varimp)
+rf_varimp <- cbind(rf_varimp, rf$finalModel$importance)
+rownames(rf_varimp) <- NULL
+names(rf_varimp)[1]<-paste("%IncMSE")
+# Visualise the variable importance 
+rf_varimp <- gather(rf_varimp, Metric, Value, c(1,3))
+rf_varimp <- left_join(rf_varimp, labs, by = "Column")
+ggplot(rf_varimp, aes(x = reorder(Label, Value), y = Value)) + geom_point() + 
+  theme_minimal() + facet_wrap(~Metric, scales = "free_x") + coord_flip() + 
+  labs(x = "Covariate") + theme(text = element_text(face = "bold"))
+```
+
+## Section 6: RF Performance  ------------------------------------------------
+
+Test the performance of the model using the actual vs predicted attack rates 
+
+```{r rf perform}
+# Make predictions on the testing set 
+p <- predict(rf, test)
+# Extract the performance metrics 
+postResample(p, test$attack_rate)
+cor(test$attack_rate, p)
+```
+
+## Section 7: Additional RF Tuning  ------------------------------------------------
+
+Random forest models often perform relatively well without model tuning but several options are available. The caret package is particularly good for tuning options. 
+
+Random forests are fairly easy to tune since there are only a handful of tuning parameters. Although the argument names may differ across packages, these hyperparameters should be present:
+  1. ntree: number of trees. We want enough trees to stabalize the error (increase accuracy) but using too many trees is unnecessarily inefficient (computationally slow)
+  2. mtry: the number of variables to randomly sample as candidates at each split. When mtry = p the model equates to bagging. When mtry = 1 the split variable is completely random, so all variables get a chance but can lead to overly biased results. A common suggestion is to start with 5 values evenly spaced across the range from 2 to p
+  3. sampsize: the number of samples to train on. The default value is 63.25%, lower introduces bias, higher introduces overfitting. Typically, when tuning this parameter we stay near the 60-80% range, to reduce bias and overfitting 
+  4. nodesize: minimum number of samples within the terminal nodes. Deeper trees introduce more variance (overfitting). Shallower trees introduce more bias
+  5. maxnodes: maximum number of terminal nodes. Another way to control the complexity of the trees.
+
+```{r rf tune}
+# All performance metrics are in RMSE and R Squared 
+# mtry - via a random search
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+gs <- train(attack_rate ~., data = train, method = 'rf', metric = 'RMSE',  
+            tuneLength  = 15, trControl = control)
+gs <- tibble(gd$results)
+
+# ntree 
+control <- trainControl(method = 'repeatedcv',
+                        number = 10,
+                        repeats = 3,
+                        search = 'grid')
+nt <- list()
+for (ntree in c(100,500,1000,1500,2000,2500)){
+  set.seed(123)
+  fit <- train(attack_rate ~.,
+               data = train,
+               method = 'rf',
+               metric = 'RMSE',
+               tuneGrid = tunegrid,
+               trControl = control,
+               ntree = ntree)
+  key <- toString(ntree)
+  nt[[key]] <- fit
+  results <- resamples(nt)
+}
+
+# nodesize
+ns <- list()
+for (node_size in c(3,5,7,9)){
+    set.seed(123)
+    fit <- train(attack_rate ~.,
+                 data = train,
+                 method = 'rf',
+                 metric = 'RMSE',
+                 tuneGrid = tunegrid,
+                 trControl = control,
+                 nodesize = node_size) 
+    key <- toString(node_size)
+    ns[[key]] <- fit
+    results <- resamples(ns)
+}
+
+```
