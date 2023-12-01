@@ -1,0 +1,22 @@
+Column,Label
+country,Country
+region,Region
+rural_urban,Urbanicity
+pop_cat,Population Catagory
+den_cat,Density Category
+start_date,Start
+attack_rate,Attack Rate
+mean_flood,Mean Flood
+fld_anomaly,Flood Anomaly
+perc_1under,Under 1
+perc_5under,Under 5
+mean_age,Mean Age
+mean_pdsi,PDSI
+pdsi_anomaly,PDSI Anomaly
+mean_precip,Mean Rainfall
+pre_anomaly,Rainfall Anomaly
+seasonality,Mean Seasonality
+mean_tmp,Mean Temperature
+tmp_anomaly,Temperature Anomaly
+perc_sanitation,Sanitation Acess
+perc_water,Water Access 
